@@ -4,7 +4,7 @@ import MySQLdb
 from pyspark.sql import HiveContext
 from pyspark import SparkConf, SparkContext, SQLContext
 
-# /usr/bin/spark-submit --jars "/home/engyne/spark/ojdbc7.jar" --master local  /home/engyne/spark/SparkDataBase.py
+# /usr/bin/spark-submit --jars "/home/engyne/spark/ojdbc7.jar" --master local  /home/engyne/spark/spark_test.py
 
 conf = SparkConf().setAppName('inc_dd_openings')
 sc = SparkContext(conf=conf)
@@ -53,7 +53,7 @@ def conMysqlDB_fetchall(sqlStr):
 	return results
 
 #  import
-def importData(isIncremental, isOverwrite):
+def importData(type):
     time_start = time.time()
     findJobSql = "SELECT * FROM job where status=1"
     result = conMysqlDB_fetchall(findJobSql)
@@ -68,11 +68,11 @@ def importData(isIncremental, isOverwrite):
         
         sqlContext.sql("use %s" % databaseName)
         
-        if isIncremental:
+        if type == "append":
             df = getDF("(select * from %s where to_char(%s, 'yyyy-MM-dd')>'%s')" % (tableName, checkColumn, lastValue))
             try:
                 nowLastValue = df.rdd.reduce(max)[checkColumn]
-                o2hBase(df, databaseName, tableName, partitionColumnName, partitionColumnDesc, isIncremental, isOverwrite)
+                o2hBase(df, databaseName, tableName, partitionColumnName, partitionColumnDesc, True, "")
                 updataJobSql = "UPDATE job SET last_value='%s' WHERE table_name='%s'" % (nowLastValue, tableName)
                 if conMysqlDB_exec(updataJobSql):
                     print("---->SUCCESS: incremental import success")
@@ -89,7 +89,7 @@ def importData(isIncremental, isOverwrite):
         else:
             df = getDF(tableName)
             try:
-                o2hBase(df, databaseName, tableName, partitionColumnName, partitionColumnDesc, isIncremental, isOverwrite)
+                o2hBase(df, databaseName, tableName, partitionColumnName, partitionColumnDesc, False, type)
                 print("---->INFO: import success")
                 resultInfoList.append("SUCCESS: %s import success" % tableName)
             except:
@@ -125,7 +125,7 @@ def getDF(tableName):
     
 
 # o2h
-def o2hBase(df, databaseName, tableName, partitionColumnName, partitionColumnDesc, isIncremental, isOverwrite):
+def o2hBase(df, databaseName, tableName, partitionColumnName, partitionColumnDesc, isIncremental, type):
     sqlContext.sql("use %s" % databaseName)
     schema = df.schema
     cnSql, columnNameSql = getTableDesc(df, partitionColumnName)
@@ -140,7 +140,7 @@ def o2hBase(df, databaseName, tableName, partitionColumnName, partitionColumnDes
         if isIncremental:
                 saveSql = "insert into table %s select * from temp%s" % (tableName, tableName)
         else:
-            if isOverwrite:
+            if type == "import-overwrite":
                 saveSql = "insert overwrite table %s select * from temp%s" % (tableName, tableName)
             else:
                 saveSql = "create table %s as select * from temp%s" % (tableName, tableName)
@@ -152,7 +152,7 @@ def o2hBase(df, databaseName, tableName, partitionColumnName, partitionColumnDes
         if isIncremental:
             saveSql = "insert into table %s partition(%s) SELECT %s,%s FROM temp%s" % (tableName, partitionColumnName, cnSql, partitionColumnName, tableName)
         else:
-            if !isOverwrite:
+            if type != "import-overwrite":
                 # dynamic partition create table
                 createTableSql = "create table %s (%s)PARTITIONED BY (%s %s) row format delimited fields terminated by '\t'  LINES TERMINATED BY '\n'" % (tableName, columnNameSql, partitionColumnName, partitionColumnDesc)
                 sqlContext.sql(createTableSql)
@@ -178,9 +178,9 @@ def getTableDesc(sqlDF, partitionColumnName):
 
     
 if __name__ == '__main__':
-    #Incremental import
-    importData(True,True)
     
-    #General import
-    # importData(False, True)
+    # type :      import                #General import
+    #               import-overwrite, #General import   overwrite table 
+    #               append                  #Incremental import
+    importData("import")
 
